@@ -6,6 +6,7 @@ pub const DEFAULT_RPC: &str =
 pub const CHAIN_ID: u64 = 324_705_682;
 pub const GAS_LIMIT: u64 = 21_000;
 pub const TX_VALUE: u64 = 1; // 1 wei
+pub const MAX_WORKERS: usize = 60;
 
 #[derive(Parser, Debug)]
 #[command(name = "skale-tx-engine")]

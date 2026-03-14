@@ -35,11 +35,13 @@ async fn main() {
     let config = Config::parse();
 
     // --------------- Validate worker count ---------------
-    if config.workers == 0 || config.workers > 60 {
+    if config.workers == 0 || config.workers > config::MAX_WORKERS {
         error!(
-            "Worker count must be between 1 and 60 (got {}). \
-             60 workers is already very aggressive for a single wallet.",
-            config.workers
+            "Worker count must be between 1 and {} (got {}). \
+             {} workers is already very aggressive for a single wallet.",
+            config::MAX_WORKERS,
+            config.workers,
+            config::MAX_WORKERS
         );
         std::process::exit(1);
     }
@@ -397,8 +399,9 @@ async fn broadcast_worker(
 
                     let new_gas_price = match broadcaster.get_gas_price().await {
                         Ok(rpc_price) => {
-                            // Apply 1.2× safety margin.
-                            let bumped = (rpc_price as f64 * 1.2) as u64;
+                            // Apply 1.2× safety margin using integer arithmetic
+                            // to avoid floating-point precision loss.
+                            let bumped = (rpc_price * 6) / 5;
                             bumped.max(1)
                         }
                         Err(gp_err) => {
@@ -406,7 +409,7 @@ async fn broadcast_worker(
                                 "Worker {}: eth_gasPrice failed ({}), bumping current price 1.2×",
                                 worker_id, gp_err
                             );
-                            let bumped = (gas_price as f64 * 1.2) as u64;
+                            let bumped = (gas_price * 6) / 5;
                             bumped.max(1)
                         }
                     };
