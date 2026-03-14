@@ -64,8 +64,45 @@ async fn main() {
         .build()
         .expect("Failed to build gas-price HTTP client");
 
-    let initial_gas_price =
-        gas_price::resolve_initial_gas_price(&gas_price_http, config.gas_price).await;
+    let initial_gas_price = if let Some(price) = config.gas_price {
+        info!(
+            "⛽ Gas price (explicit override): {} wei ({:.6} Gwei)",
+            price,
+            price as f64 / 1e9
+        );
+        if price == 0 {
+            warn!(
+                "⚠️  Gas price is 0 wei — transactions are likely to be rejected on \
+                 SKALE Base Sepolia (base fee is non-zero). Pass --gas-price <WEI> \
+                 or set GAS_PRICE env to fix this."
+            );
+        }
+        price
+    } else {
+        // Try eth_gasPrice from the RPC first (most reliable source).
+        match broadcaster.get_gas_price().await {
+            Ok(price) => {
+                info!(
+                    "⛽ Gas price (from RPC eth_gasPrice): {} wei ({:.6} Gwei)",
+                    price,
+                    price as f64 / 1e9
+                );
+                // Ensure at least 1 wei so SKALE does not reject zero-price txs.
+                let effective = price.max(1);
+                if effective != price {
+                    info!("⛽ Gas price adjusted to minimum 1 wei");
+                }
+                effective
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️  eth_gasPrice RPC call failed ({}). Falling back to explorer API.",
+                    e
+                );
+                gas_price::resolve_initial_gas_price(&gas_price_http, None).await
+            }
+        }
+    };
 
     let gas_price_state = Arc::new(AtomicU64::new(initial_gas_price));
 
@@ -106,6 +143,56 @@ async fn main() {
 
     let nonce_counter = Arc::new(AtomicU64::new(initial_nonce));
     let metrics = Arc::new(Metrics::new());
+
+    // --------------- Nonce resync background task ---------------
+    // When the local nonce counter runs ahead of the on-chain confirmed nonce
+    // (e.g. due to cascading transaction failures), all new transactions carry
+    // "too high" nonces and are rejected.  This task periodically re-fetches
+    // the pending nonce from the network and resets the counter whenever it
+    // has drifted more than `MAX_NONCE_DRIFT` ahead.
+    {
+        // MAX_NONCE_DRIFT: tolerate up to this many in-flight/pending nonces
+        // ahead of the confirmed chain nonce before forcing a resync.  With 64
+        // workers each incrementing by 1, ≈200 covers ~3 full scheduling rounds
+        // while being small enough to recover within seconds when all workers
+        // are stuck in a failure cascade.
+        const MAX_NONCE_DRIFT: u64 = 200;
+        const RESYNC_INTERVAL_SECS: u64 = 10;
+
+        let bc = broadcaster.clone();
+        let nc = nonce_counter.clone();
+        let sender = sender_hex.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(RESYNC_INTERVAL_SECS)).await;
+                match bc.get_nonce(&sender).await {
+                    Ok(chain_nonce) => {
+                        let local_nonce = nc.load(Ordering::Relaxed);
+                        if local_nonce > chain_nonce + MAX_NONCE_DRIFT {
+                            // Use compare_exchange so only one concurrent resync wins.
+                            if nc
+                                .compare_exchange(
+                                    local_nonce,
+                                    chain_nonce,
+                                    Ordering::Relaxed,
+                                    Ordering::Relaxed,
+                                )
+                                .is_ok()
+                            {
+                                warn!(
+                                    "🔄 Nonce resynced: local {} → chain {} (drift was {})",
+                                    local_nonce,
+                                    chain_nonce,
+                                    local_nonce - chain_nonce
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => warn!("⚠️  Nonce resync failed: {}", e),
+                }
+            }
+        });
+    }
 
     // --------------- Address generator threads ---------------
     let (addr_tx, addr_rx) = bounded::<[u8; 20]>(config.pool_size);
@@ -274,9 +361,12 @@ async fn broadcast_worker(
                     tx_hash
                 );
             }
-            Err(e) => {
+            Err((e, latency_micros)) => {
                 metrics.record_failure();
-                tracing::debug!("Worker {}: nonce={} failed: {}", worker_id, nonce, e);
+                // Always record latency so the "Avg RPC" stat reflects whether
+                // requests are actually reaching the server.
+                metrics.record_rpc_latency(latency_micros);
+                warn!("Worker {}: nonce={} failed: {}", worker_id, nonce, e);
             }
         }
     }
