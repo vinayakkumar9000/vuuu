@@ -43,7 +43,7 @@ async fn main() {
     // --------------- Parse private key ---------------
     let key_hex = config.private_key.trim_start_matches("0x");
     let key_bytes = hex::decode(key_hex).expect("Invalid private key hex");
-    assert!(key_bytes.len() == 32, "Private key must be 32 bytes");
+    assert_eq!(key_bytes.len(), 32, "Private key must be 32 bytes");
     let signing_key =
         SigningKey::from_slice(&key_bytes).expect("Private key is not a valid secp256k1 scalar");
 

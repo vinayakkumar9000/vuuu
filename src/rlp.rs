@@ -62,7 +62,7 @@ fn uint_to_min_bytes(value: u64) -> Vec<u8> {
         return vec![];
     }
     let bytes = value.to_be_bytes();
-    let start = bytes.iter().position(|&b| b != 0).unwrap_or(7);
+    let start = bytes.iter().position(|&b| b != 0).unwrap_or(8);
     bytes[start..].to_vec()
 }
 
