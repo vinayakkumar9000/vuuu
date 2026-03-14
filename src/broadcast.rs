@@ -123,7 +123,7 @@ impl Broadcaster {
             .json()
             .await
             .map_err(|e| format!("Failed to parse send response: {e}"))?;
-        let latency_micros = started.elapsed().as_micros() as u64;
+        let latency_micros = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
 
         if let Some(error) = resp.get("error") {
             return Err(format!("RPC error: {error}"));

@@ -134,8 +134,8 @@ async fn main() {
                 );
                 let gas_price_gwei = gas_price as f64 / 1_000_000_000.0;
                 info!(
-                    "⛽ Gas-like terminal | Gas usage: {} / {} (100%) | Fee: {} wei | Gas price: {} wei ({:.6} Gwei) | Addr pool produced: {}",
-                    total_gas, total_gas, total_fee, gas_price, gas_price_gwei, addrs
+                    "⛽ Gas usage | Total gas used: {} | Fee: {} wei | Gas price: {} wei ({:.6} Gwei) | Addr pool produced: {}",
+                    total_gas, total_fee, gas_price, gas_price_gwei, addrs
                 );
             }
         });

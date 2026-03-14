@@ -43,8 +43,12 @@ impl Metrics {
     pub fn record_success(&self, gas_limit: u64, gas_price: u64) {
         self.sent.fetch_add(1, Ordering::Relaxed);
         self.total_gas_used.fetch_add(gas_limit, Ordering::Relaxed);
-        self.total_fee_wei
-            .fetch_add(gas_limit.saturating_mul(gas_price), Ordering::Relaxed);
+        let fee = gas_limit.saturating_mul(gas_price);
+        let _ = self
+            .total_fee_wei
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
+                Some(prev.saturating_add(fee))
+            });
     }
 
     /// Record one failed transaction.

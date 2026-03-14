@@ -92,5 +92,5 @@ The metrics output now includes a "gas-like" line similar to explorer transactio
 
 ```text
 ⛽ Speed/Stats | Sent: 1800 | Failed: 2 | TPS(avg): 360.0 | TPS(peak): 402.5 | Avg RPC: 11.42 ms | Nonce: 159594
-⛽ Gas-like terminal | Gas usage: 37,800,000 / 37,800,000 (100%) | Fee: 0 wei | Gas price: 0 wei (0.000000 Gwei) | Addr pool produced: 500000
+⛽ Gas usage | Total gas used: 37800000 | Fee: 0 wei | Gas price: 0 wei (0.000000 Gwei) | Addr pool produced: 500000
 ```
