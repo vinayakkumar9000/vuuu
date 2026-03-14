@@ -1,6 +1,6 @@
 /// RPC broadcaster with connection pooling and multi-endpoint load distribution.
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -100,7 +100,7 @@ impl Broadcaster {
 
     /// Broadcast a raw signed transaction via `eth_sendRawTransaction`.
     /// Distributes requests across configured RPC endpoints.
-    pub async fn send_raw_tx(&self, raw_tx_hex: &str) -> Result<String, String> {
+    pub async fn send_raw_tx(&self, raw_tx_hex: &str) -> Result<(String, u64), String> {
         let id = self.request_id.fetch_add(1, Ordering::Relaxed);
         let rpc_idx = id as usize % self.rpc_urls.len();
         let rpc = &self.rpc_urls[rpc_idx];
@@ -112,6 +112,7 @@ impl Broadcaster {
             "id": id
         });
 
+        let started = Instant::now();
         let resp: Value = self
             .client
             .post(rpc)
@@ -122,6 +123,7 @@ impl Broadcaster {
             .json()
             .await
             .map_err(|e| format!("Failed to parse send response: {e}"))?;
+        let latency_micros = started.elapsed().as_micros() as u64;
 
         if let Some(error) = resp.get("error") {
             return Err(format!("RPC error: {error}"));
@@ -129,7 +131,7 @@ impl Broadcaster {
 
         resp["result"]
             .as_str()
-            .map(String::from)
+            .map(|tx| (tx.to_string(), latency_micros))
             .ok_or_else(|| "Missing tx hash in response".to_string())
     }
 }

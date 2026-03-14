@@ -109,17 +109,33 @@ async fn main() {
     {
         let m = metrics.clone();
         let nc = nonce_counter.clone();
+        let gas_price = config.gas_price;
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 let sent = m.sent.load(Ordering::Relaxed);
                 let failed = m.failed.load(Ordering::Relaxed);
                 let addrs = m.addresses_generated.load(Ordering::Relaxed);
+                let total_gas = m.total_gas_used.load(Ordering::Relaxed);
+                let total_fee = m.total_fee_wei.load(Ordering::Relaxed);
+                let latency_samples = m.rpc_latency_samples.load(Ordering::Relaxed);
+                let latency_sum = m.rpc_latency_micros_sum.load(Ordering::Relaxed);
+                let avg_rpc_ms = if latency_samples > 0 {
+                    (latency_sum as f64 / latency_samples as f64) / 1000.0
+                } else {
+                    0.0
+                };
                 let tps = m.tps();
+                let peak_tps = m.update_peak_tps(tps);
                 let nonce = nc.load(Ordering::Relaxed);
                 info!(
-                    "📊 Sent: {} | Failed: {} | TPS: {:.1} | Addresses: {} | Nonce: {}",
-                    sent, failed, tps, addrs, nonce
+                    "⛽ Speed/Stats | Sent: {} | Failed: {} | TPS(avg): {:.1} | TPS(peak): {:.1} | Avg RPC: {:.2} ms | Nonce: {}",
+                    sent, failed, tps, peak_tps, avg_rpc_ms, nonce
+                );
+                let gas_price_gwei = gas_price as f64 / 1_000_000_000.0;
+                info!(
+                    "⛽ Gas-like terminal | Gas usage: {} / {} (100%) | Fee: {} wei | Gas price: {} wei ({:.6} Gwei) | Addr pool produced: {}",
+                    total_gas, total_gas, total_fee, gas_price, gas_price_gwei, addrs
                 );
             }
         });
@@ -193,7 +209,7 @@ async fn broadcast_worker(
             Ok(raw) => raw,
             Err(e) => {
                 error!("Worker {}: signing failed: {}", worker_id, e);
-                metrics.failed.fetch_add(1, Ordering::Relaxed);
+                metrics.record_failure();
                 continue;
             }
         };
@@ -202,8 +218,9 @@ async fn broadcast_worker(
 
         // Broadcast (fire-and-forget — we do not wait for confirmation).
         match broadcaster.send_raw_tx(&raw_tx_hex).await {
-            Ok(tx_hash) => {
-                metrics.sent.fetch_add(1, Ordering::Relaxed);
+            Ok((tx_hash, latency_micros)) => {
+                metrics.record_success(config::GAS_LIMIT, gas_price);
+                metrics.record_rpc_latency(latency_micros);
                 tracing::debug!(
                     "Worker {}: nonce={} to=0x{} hash={}",
                     worker_id,
@@ -213,7 +230,7 @@ async fn broadcast_worker(
                 );
             }
             Err(e) => {
-                metrics.failed.fetch_add(1, Ordering::Relaxed);
+                metrics.record_failure();
                 tracing::debug!("Worker {}: nonce={} failed: {}", worker_id, nonce, e);
             }
         }
