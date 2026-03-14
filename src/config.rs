@@ -25,8 +25,8 @@ pub struct Config {
     )]
     pub rpc_urls: Vec<String>,
 
-    /// Number of async broadcast worker tasks.
-    #[arg(short = 'w', long, default_value = "64")]
+    /// Number of async broadcast worker tasks (1–60).
+    #[arg(short = 'w', long, default_value = "10")]
     pub workers: usize,
 
     /// Address pool size (bounded channel capacity).
