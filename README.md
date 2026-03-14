@@ -26,6 +26,7 @@
 - [✨ Features](#-features)
 - [🏗️ Architecture](#-architecture)
 - [⚙️ Configuration](#-configuration)
+- [⛽ Gas Price](#-gas-price)
 - [🖥️ Windows — Local Setup](#-windows--local-setup)
 - [🐧 Ubuntu / Debian Linux — Local or VPS](#-ubuntu--debian-linux--local-or-vps)
 - [☁️ AWS EC2 — Ubuntu VPS](#-aws-ec2--ubuntu-vps)
@@ -65,6 +66,7 @@
 | 🏊 **Connection pooling** | HTTP keep-alive for maximum throughput |
 | 📊 **Real-time metrics** | TPS, sent/failed counts, nonce (every 5 s) |
 | ⛽ **Gas-style telemetry** | TPS avg/peak, gas used, fee, gas price, RPC latency |
+| 🔄 **Dynamic gas price** | Auto-fetches gas price from explorer API; slow polling keeps it current |
 | ♾️ **Continuous operation** | Runs indefinitely; graceful RPC error handling |
 
 </div>
@@ -115,7 +117,50 @@
 | `-w`, `--workers` | — | `64` | Number of async broadcast worker tasks |
 | `-p`, `--pool-size` | — | `100000` | Address pool channel capacity |
 | `-g`, `--generators` | — | `4` | Number of address generator OS threads |
-| `--gas-price` | — | `0` | Gas price in wei (SKALE is typically 0) |
+| `--gas-price` | `GAS_PRICE` | *auto-fetch* | Gas price in wei (see [Gas Price](#-gas-price) below) |
+| `--gas-price-poll-secs` | `GAS_PRICE_POLL_SECS` | `60` | How often (seconds) to refresh gas price from the explorer API |
+
+---
+
+## ⛽ Gas Price
+
+SKALE Base Sepolia has a **non-zero base fee** (currently `0.0001 Gwei = 100 wei`).
+Sending transactions with `gas_price = 0` causes them to be rejected, which is why you
+may see a very high "Failed" count when using the historical default.
+
+### How it works
+
+1. **Auto-fetch (default)** — On startup the engine calls the
+   [SKALE Base Sepolia explorer gastracker API](https://base-sepolia-testnet-explorer.skalenodes.com/api?module=gastracker&action=gasoracle)
+   and uses the reported `SafeGasPrice` (converted from Gwei to wei) for all
+   transactions.
+2. **Background polling** — A background task re-fetches the gas price every
+   `--gas-price-poll-secs` seconds (default: **60 s**). All workers read the latest
+   value atomically, so gas price changes are picked up without a restart.
+3. **Safe fallback** — If the API call fails for any reason, the engine falls back to
+   **100 wei**. A warning is logged to indicate that the fallback is in use.
+4. **Explicit override** — Pass `--gas-price <WEI>` (or set `GAS_PRICE=<WEI>` in the
+   environment) to pin a specific value. The background poller is disabled when an
+   explicit value is provided.
+
+### Examples
+
+```bash
+# Let the engine auto-fetch the gas price (recommended):
+cargo run --release -- -k YOUR_PRIVATE_KEY
+
+# Pin an explicit gas price (100 wei = 0.0001 Gwei):
+cargo run --release -- -k YOUR_PRIVATE_KEY --gas-price 100
+
+# Override via environment variable:
+GAS_PRICE=100 cargo run --release -- -k YOUR_PRIVATE_KEY
+
+# Change the poll interval to 30 seconds:
+cargo run --release -- -k YOUR_PRIVATE_KEY --gas-price-poll-secs 30
+```
+
+> ⚠️ **Warning:** Setting `--gas-price 0` will produce a warning in the logs
+> and is likely to result in transaction rejections on SKALE Base Sepolia.
 
 ---
 
@@ -710,8 +755,14 @@ The engine cannot reach the RPC endpoint.
 <details>
 <summary><b>❌ High "Failed" count in metrics</b></summary>
 
-This is usually normal during burst periods. Common causes:
+This is usually caused by one of the following:
 
+- **Gas price too low (most common on SKALE Base Sepolia)** — The network requires a non-zero
+  gas price. Starting from v0.2, the engine auto-fetches the correct gas price from the
+  explorer API. If you are running an older build or the API is unreachable, set it explicitly:
+  ```bash
+  cargo run --release -- -k YOUR_KEY --gas-price 100
+  ```
 - **Nonce too low** — if restarting after a crash, the engine auto-fetches the correct nonce from the RPC.
 - **RPC rate-limiting** — add more RPC endpoints with `--rpc-urls "url1,url2,url3"`.
 - **Network congestion** — reduce workers: `-w 32`.
