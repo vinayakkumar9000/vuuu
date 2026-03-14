@@ -23,7 +23,10 @@ use crate::transaction::{address_from_key, LegacyTx};
 #[tokio::main]
 async fn main() {
     // Initialise structured logging.
+    // Write logs to stderr so they don't interfere with the in-place status
+    // line that is rendered on stdout via carriage-return.
     tracing_subscriber::fmt()
+        .with_writer(io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("skale_tx_engine=info".parse().unwrap()),
