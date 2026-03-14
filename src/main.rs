@@ -34,6 +34,16 @@ async fn main() {
 
     let config = Config::parse();
 
+    // Validate worker count (max 60).
+    if config.workers == 0 || config.workers > config::MAX_WORKERS {
+        eprintln!(
+            "Error: --workers must be between 1 and {} (got {})",
+            config::MAX_WORKERS,
+            config.workers
+        );
+        std::process::exit(1);
+    }
+
     info!("=== SKALE Base Sepolia Transaction Engine ===");
     info!("Chain ID: {}", config::CHAIN_ID);
     info!("Workers: {}", config.workers);
@@ -152,10 +162,10 @@ async fn main() {
     // has drifted more than `MAX_NONCE_DRIFT` ahead.
     {
         // MAX_NONCE_DRIFT: tolerate up to this many in-flight/pending nonces
-        // ahead of the confirmed chain nonce before forcing a resync.  With 64
-        // workers each incrementing by 1, ≈200 covers ~3 full scheduling rounds
-        // while being small enough to recover within seconds when all workers
-        // are stuck in a failure cascade.
+        // ahead of the confirmed chain nonce before forcing a resync.  With up
+        // to 60 workers each incrementing by 1, ≈200 covers several full
+        // scheduling rounds while being small enough to recover within seconds
+        // when all workers are stuck in a failure cascade.
         const MAX_NONCE_DRIFT: u64 = 200;
         const RESYNC_INTERVAL_SECS: u64 = 10;
 
@@ -296,8 +306,8 @@ async fn main() {
 /// Async broadcast worker.
 ///
 /// Continuously pulls addresses from the pool, builds, signs, and broadcasts
-/// transactions.  Uses non-blocking `try_recv` + `yield_now` to avoid blocking
-/// the Tokio executor.
+/// transactions.  On "gas price too low" errors, refreshes the shared gas price
+/// state (with a 20 % bump) and retries the same nonce once before moving on.
 async fn broadcast_worker(
     worker_id: usize,
     addr_rx: crossbeam_channel::Receiver<[u8; 20]>,
@@ -362,10 +372,58 @@ async fn broadcast_worker(
                 );
             }
             Err((e, latency_micros)) => {
-                metrics.record_failure();
-                // Always record latency so the "Avg RPC" stat reflects whether
-                // requests are actually reaching the server.
                 metrics.record_rpc_latency(latency_micros);
+
+                if Broadcaster::is_gas_price_too_low(&e) {
+                    // Refresh gas price from the RPC and apply a 20 % bump.
+                    if let Ok(fresh_price) = broadcaster.get_gas_price().await {
+                        let bumped = fresh_price.saturating_mul(120) / 100; // +20 %
+                        let bumped = bumped.max(1); // at least 1 wei
+                        gas_price_state.store(bumped, Ordering::Relaxed);
+                        warn!(
+                            "Worker {}: gas price too low — bumped to {} wei ({:.6} Gwei)",
+                            worker_id,
+                            bumped,
+                            bumped as f64 / 1e9
+                        );
+                    }
+
+                    // Retry the same nonce once with the updated gas price.
+                    let retry_gas_price = gas_price_state.load(Ordering::Relaxed);
+                    let retry_tx = LegacyTx {
+                        nonce,
+                        gas_price: retry_gas_price,
+                        gas_limit: config::GAS_LIMIT,
+                        to: to_address,
+                        value: config::TX_VALUE,
+                    };
+
+                    if let Ok(retry_raw) = retry_tx.sign(&signing_key) {
+                        let retry_hex = format!("0x{}", hex::encode(&retry_raw));
+                        match broadcaster.send_raw_tx(&retry_hex).await {
+                            Ok((tx_hash, retry_latency)) => {
+                                metrics.record_success(config::GAS_LIMIT, retry_gas_price);
+                                metrics.record_rpc_latency(retry_latency);
+                                tracing::debug!(
+                                    "Worker {}: nonce={} retry succeeded hash={}",
+                                    worker_id,
+                                    nonce,
+                                    tx_hash
+                                );
+                                continue;
+                            }
+                            Err((retry_err, retry_latency)) => {
+                                metrics.record_rpc_latency(retry_latency);
+                                warn!(
+                                    "Worker {}: nonce={} retry failed: {}",
+                                    worker_id, nonce, retry_err
+                                );
+                            }
+                        }
+                    }
+                }
+
+                metrics.record_failure();
                 warn!("Worker {}: nonce={} failed: {}", worker_id, nonce, e);
             }
         }

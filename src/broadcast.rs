@@ -139,6 +139,15 @@ impl Broadcaster {
             .ok_or_else(|| ("Missing tx hash in response".to_string(), latency_micros))
     }
 
+    /// Check whether an RPC error message indicates the gas price was too low.
+    pub fn is_gas_price_too_low(error_msg: &str) -> bool {
+        let lower = error_msg.to_lowercase();
+        lower.contains("gas price")
+            || lower.contains("gasprice")
+            || lower.contains("underpriced")
+            || lower.contains("-32004")
+    }
+
     /// Query `eth_gasPrice` for the current suggested gas price in wei.
     pub async fn get_gas_price(&self) -> Result<u64, String> {
         let rpc = &self.rpc_urls[0];
@@ -217,5 +226,32 @@ mod tests {
         let price =
             u64::from_str_radix(hex.trim_start_matches("0x"), 16).expect("parse failed");
         assert_eq!(price, 1_000_000_000u64);
+    }
+
+    /// Verify `is_gas_price_too_low` detects common gas price error messages.
+    #[test]
+    fn is_gas_price_too_low_matches() {
+        use super::Broadcaster;
+        assert!(Broadcaster::is_gas_price_too_low(
+            "RPC error: Transaction gas price lower than current eth_gasPrice"
+        ));
+        assert!(Broadcaster::is_gas_price_too_low(
+            "RPC error: {\"code\":-32004,\"message\":\"gas price too low\"}"
+        ));
+        assert!(Broadcaster::is_gas_price_too_low("transaction underpriced"));
+        assert!(Broadcaster::is_gas_price_too_low(
+            "error: GasPrice is below minimum"
+        ));
+    }
+
+    /// Verify `is_gas_price_too_low` does NOT match unrelated errors.
+    #[test]
+    fn is_gas_price_too_low_no_false_positives() {
+        use super::Broadcaster;
+        assert!(!Broadcaster::is_gas_price_too_low("nonce too low"));
+        assert!(!Broadcaster::is_gas_price_too_low(
+            "insufficient funds for transfer"
+        ));
+        assert!(!Broadcaster::is_gas_price_too_low("connection refused"));
     }
 }

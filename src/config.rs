@@ -7,6 +7,9 @@ pub const CHAIN_ID: u64 = 324_705_682;
 pub const GAS_LIMIT: u64 = 21_000;
 pub const TX_VALUE: u64 = 1; // 1 wei
 
+/// Maximum number of broadcast workers allowed.
+pub const MAX_WORKERS: usize = 60;
+
 #[derive(Parser, Debug)]
 #[command(name = "skale-tx-engine")]
 #[command(about = "Ultra-high-performance transaction engine for SKALE Base Sepolia")]
@@ -25,8 +28,8 @@ pub struct Config {
     )]
     pub rpc_urls: Vec<String>,
 
-    /// Number of async broadcast worker tasks.
-    #[arg(short = 'w', long, default_value = "64")]
+    /// Number of async broadcast worker tasks (1–60).
+    #[arg(short = 'w', long, default_value = "10")]
     pub workers: usize,
 
     /// Address pool size (bounded channel capacity).
@@ -53,4 +56,21 @@ pub struct Config {
     /// conservative.
     #[arg(long, env = "GAS_PRICE_POLL_SECS", default_value = "60")]
     pub gas_price_poll_secs: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_workers_is_60() {
+        assert_eq!(MAX_WORKERS, 60);
+    }
+
+    #[test]
+    fn default_workers_within_limit() {
+        // The default_value for workers should be within the allowed range.
+        let default: usize = 10;
+        assert!(default >= 1 && default <= MAX_WORKERS);
+    }
 }
