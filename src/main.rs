@@ -1,5 +1,6 @@
 mod broadcast;
 mod config;
+mod gas_price;
 mod metrics;
 mod rlp;
 mod transaction;
@@ -13,6 +14,7 @@ use clap::Parser;
 use crossbeam_channel::bounded;
 use k256::ecdsa::SigningKey;
 use rand::RngCore;
+use reqwest::Client;
 use tracing::{error, info, warn};
 
 use crate::broadcast::Broadcaster;
@@ -37,7 +39,6 @@ async fn main() {
     info!("Workers: {}", config.workers);
     info!("Address pool: {}", config.pool_size);
     info!("Generator threads: {}", config.generators);
-    info!("Gas price: {} wei", config.gas_price);
     info!("RPC endpoints: {:?}", config.rpc_urls);
     info!("CPU cores: {}", num_cpus::get());
 
@@ -54,6 +55,28 @@ async fn main() {
 
     // --------------- RPC setup ---------------
     let broadcaster = Arc::new(Broadcaster::new(config.rpc_urls.clone()));
+
+    // --------------- Gas price resolution ---------------
+    // Build a dedicated HTTP client for the gas price fetcher so it doesn't
+    // share the broadcaster's connection pool / timeout settings.
+    let gas_price_http = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .expect("Failed to build gas-price HTTP client");
+
+    let initial_gas_price =
+        gas_price::resolve_initial_gas_price(&gas_price_http, config.gas_price).await;
+
+    let gas_price_state = Arc::new(AtomicU64::new(initial_gas_price));
+
+    // Start the background poller only when the user has not pinned a price.
+    if config.gas_price.is_none() {
+        gas_price::spawn_gas_price_poller(
+            gas_price_http,
+            gas_price_state.clone(),
+            config.gas_price_poll_secs,
+        );
+    }
 
     // Check balance.
     match broadcaster.get_balance(&sender_hex).await {
@@ -110,7 +133,7 @@ async fn main() {
     {
         let m = metrics.clone();
         let nc = nonce_counter.clone();
-        let gas_price = config.gas_price;
+        let gp_state = gas_price_state.clone();
         tokio::spawn(async move {
             let use_inline_status = io::stdout().is_terminal();
             let mut prev_status_len = 0usize;
@@ -131,6 +154,7 @@ async fn main() {
                 let tps = m.tps();
                 let peak_tps = m.update_peak_tps(tps);
                 let nonce = nc.load(Ordering::Relaxed);
+                let gas_price = gp_state.load(Ordering::Relaxed);
                 let gas_price_gwei = gas_price as f64 / 1_000_000_000.0;
                 let status_line = format!(
                     "⛽ Live Stats | Sent: {} | Failed: {} | TPS(avg): {:.1} | TPS(peak): {:.1} | Avg RPC: {:.2} ms | Nonce: {} | Gas: {} | Fee: {} wei | Gas price: {} wei ({:.6} Gwei) | Addr pool produced: {}",
@@ -167,10 +191,10 @@ async fn main() {
         let bc = broadcaster.clone();
         let nc = nonce_counter.clone();
         let m = metrics.clone();
-        let gas_price = config.gas_price;
+        let gp = gas_price_state.clone();
 
         handles.push(tokio::spawn(async move {
-            broadcast_worker(worker_id, rx, key, bc, nc, m, gas_price).await;
+            broadcast_worker(worker_id, rx, key, bc, nc, m, gp).await;
         }));
     }
 
@@ -194,7 +218,7 @@ async fn broadcast_worker(
     broadcaster: Arc<Broadcaster>,
     nonce_counter: Arc<AtomicU64>,
     metrics: Arc<Metrics>,
-    gas_price: u64,
+    gas_price_state: Arc<AtomicU64>,
 ) {
     loop {
         // Non-blocking receive from the crossbeam channel.
@@ -213,6 +237,9 @@ async fn broadcast_worker(
 
         // Atomically reserve a nonce.
         let nonce = nonce_counter.fetch_add(1, Ordering::Relaxed);
+
+        // Read the latest gas price (updated in the background by the poller).
+        let gas_price = gas_price_state.load(Ordering::Relaxed);
 
         // Build & sign transaction.
         let tx = LegacyTx {

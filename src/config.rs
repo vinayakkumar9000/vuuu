@@ -37,7 +37,20 @@ pub struct Config {
     #[arg(short = 'g', long, default_value = "4")]
     pub generators: usize,
 
-    /// Gas price in wei (SKALE typically uses 0).
-    #[arg(long, default_value = "0")]
-    pub gas_price: u64,
+    /// Gas price in wei.
+    ///
+    /// When omitted the engine fetches the current gas price from the SKALE Base
+    /// Sepolia block-explorer REST API and refreshes it at `--gas-price-poll-secs`
+    /// interval.  The fallback when the API is unreachable is 100 wei.
+    /// Set to 0 to send fee-free transactions (may be rejected by the network).
+    #[arg(long, env = "GAS_PRICE")]
+    pub gas_price: Option<u64>,
+
+    /// How often (in seconds) to re-fetch the gas price from the explorer API.
+    ///
+    /// Only applies when `--gas-price` / `GAS_PRICE` is not set.
+    /// A slower interval reduces API load; the default (60 s) is intentionally
+    /// conservative.
+    #[arg(long, env = "GAS_PRICE_POLL_SECS", default_value = "60")]
+    pub gas_price_poll_secs: u64,
 }
