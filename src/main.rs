@@ -34,6 +34,18 @@ async fn main() {
 
     let config = Config::parse();
 
+    // --------------- Validate worker count ---------------
+    if config.workers == 0 || config.workers > config::MAX_WORKERS {
+        error!(
+            "Worker count must be between 1 and {} (got {}). \
+             {} workers is already very aggressive for a single wallet.",
+            config::MAX_WORKERS,
+            config.workers,
+            config::MAX_WORKERS
+        );
+        std::process::exit(1);
+    }
+
     info!("=== SKALE Base Sepolia Transaction Engine ===");
     info!("Chain ID: {}", config::CHAIN_ID);
     info!("Workers: {}", config.workers);
@@ -152,10 +164,10 @@ async fn main() {
     // has drifted more than `MAX_NONCE_DRIFT` ahead.
     {
         // MAX_NONCE_DRIFT: tolerate up to this many in-flight/pending nonces
-        // ahead of the confirmed chain nonce before forcing a resync.  With 64
-        // workers each incrementing by 1, ≈200 covers ~3 full scheduling rounds
-        // while being small enough to recover within seconds when all workers
-        // are stuck in a failure cascade.
+        // ahead of the confirmed chain nonce before forcing a resync.  With up
+        // to 60 workers each incrementing by 1, ≈200 covers ~3 full scheduling
+        // rounds while being small enough to recover within seconds when all
+        // workers are stuck in a failure cascade.
         const MAX_NONCE_DRIFT: u64 = 200;
         const RESYNC_INTERVAL_SECS: u64 = 10;
 
@@ -293,11 +305,32 @@ async fn main() {
     }
 }
 
+/// Returns `true` when the RPC error message indicates a gas-price-too-low
+/// rejection (SKALE error code -32004 or similar wording).
+fn is_gas_price_too_low(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("gas price")
+        || lower.contains("gasprice")
+        || lower.contains("-32004")
+        || lower.contains("underpriced")
+}
+
+/// Apply a 20 % safety bump to a gas price (integer arithmetic, minimum 1 wei).
+fn bump_gas_price(price: u64) -> u64 {
+    // 6/5 = 1.2×
+    ((price * 6) / 5).max(1)
+}
+
 /// Async broadcast worker.
 ///
 /// Continuously pulls addresses from the pool, builds, signs, and broadcasts
 /// transactions.  Uses non-blocking `try_recv` + `yield_now` to avoid blocking
 /// the Tokio executor.
+///
+/// When a transaction is rejected because the gas price is too low the worker:
+///   1. Fetches a fresh gas price via `eth_gasPrice` and applies a 1.2× bump.
+///   2. Updates the shared `gas_price_state` so other workers benefit too.
+///   3. Retries the **same nonce** once with the updated price.
 async fn broadcast_worker(
     worker_id: usize,
     addr_rx: crossbeam_channel::Receiver<[u8; 20]>,
@@ -362,12 +395,144 @@ async fn broadcast_worker(
                 );
             }
             Err((e, latency_micros)) => {
-                metrics.record_failure();
-                // Always record latency so the "Avg RPC" stat reflects whether
-                // requests are actually reaching the server.
                 metrics.record_rpc_latency(latency_micros);
-                warn!("Worker {}: nonce={} failed: {}", worker_id, nonce, e);
+
+                if is_gas_price_too_low(&e) {
+                    // ---- Gas-price-too-low: refresh price & retry once ----
+                    warn!(
+                        "Worker {}: nonce={} gas price too low — refreshing",
+                        worker_id, nonce
+                    );
+
+                    let new_gas_price = match broadcaster.get_gas_price().await {
+                        Ok(rpc_price) => bump_gas_price(rpc_price),
+                        Err(gp_err) => {
+                            warn!(
+                                "Worker {}: eth_gasPrice failed ({}), bumping current price 1.2×",
+                                worker_id, gp_err
+                            );
+                            bump_gas_price(gas_price)
+                        }
+                    };
+
+                    // Update shared state so all workers pick up the new price.
+                    gas_price_state.fetch_max(new_gas_price, Ordering::Relaxed);
+                    info!(
+                        "Worker {}: gas price bumped to {} wei ({:.6} Gwei)",
+                        worker_id,
+                        new_gas_price,
+                        new_gas_price as f64 / 1e9
+                    );
+
+                    // Retry the same nonce with the higher gas price.
+                    let retry_tx = LegacyTx {
+                        nonce,
+                        gas_price: new_gas_price,
+                        gas_limit: config::GAS_LIMIT,
+                        to: to_address,
+                        value: config::TX_VALUE,
+                    };
+
+                    match retry_tx.sign(&signing_key) {
+                        Ok(raw) => {
+                            let raw_hex = format!("0x{}", hex::encode(&raw));
+                            match broadcaster.send_raw_tx(&raw_hex).await {
+                                Ok((tx_hash, lat)) => {
+                                    metrics.record_success(config::GAS_LIMIT, new_gas_price);
+                                    metrics.record_rpc_latency(lat);
+                                    tracing::debug!(
+                                        "Worker {}: nonce={} RETRY ok hash={}",
+                                        worker_id,
+                                        nonce,
+                                        tx_hash
+                                    );
+                                }
+                                Err((retry_err, lat)) => {
+                                    metrics.record_failure();
+                                    metrics.record_rpc_latency(lat);
+                                    warn!(
+                                        "Worker {}: nonce={} retry failed: {}",
+                                        worker_id, nonce, retry_err
+                                    );
+                                }
+                            }
+                        }
+                        Err(sign_err) => {
+                            error!(
+                                "Worker {}: retry signing failed: {}",
+                                worker_id, sign_err
+                            );
+                            metrics.record_failure();
+                        }
+                    }
+                } else {
+                    // ---- Any other error: log and move on ----
+                    metrics.record_failure();
+                    warn!("Worker {}: nonce={} failed: {}", worker_id, nonce, e);
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gas_price_too_low_detects_error_code() {
+        assert!(is_gas_price_too_low(
+            "RPC error: {\"code\":-32004,\"message\":\"Transaction gas price lower than current eth_gasPrice\"}"
+        ));
+    }
+
+    #[test]
+    fn gas_price_too_low_detects_underpriced() {
+        assert!(is_gas_price_too_low("transaction underpriced"));
+    }
+
+    #[test]
+    fn gas_price_too_low_detects_gas_price_wording() {
+        assert!(is_gas_price_too_low(
+            "Transaction gas price lower than current eth_gasPrice"
+        ));
+    }
+
+    #[test]
+    fn gas_price_too_low_detects_camel_case() {
+        assert!(is_gas_price_too_low("invalid gasPrice"));
+    }
+
+    #[test]
+    fn gas_price_too_low_case_insensitive() {
+        assert!(is_gas_price_too_low("Gas Price too low"));
+        assert!(is_gas_price_too_low("GASPRICE invalid"));
+        assert!(is_gas_price_too_low("UNDERPRICED transaction"));
+    }
+
+    #[test]
+    fn gas_price_too_low_ignores_unrelated_errors() {
+        assert!(!is_gas_price_too_low("nonce too low"));
+        assert!(!is_gas_price_too_low("insufficient funds"));
+        assert!(!is_gas_price_too_low("RPC send failed: timeout"));
+    }
+
+    #[test]
+    fn bump_gas_price_applies_20_percent() {
+        assert_eq!(bump_gas_price(100), 120);
+        assert_eq!(bump_gas_price(1000), 1200);
+    }
+
+    #[test]
+    fn bump_gas_price_minimum_is_one() {
+        assert_eq!(bump_gas_price(0), 1);
+    }
+
+    #[test]
+    fn bump_gas_price_handles_small_values() {
+        // 1 * 6 / 5 = 1 (integer truncation), still >= 1
+        assert_eq!(bump_gas_price(1), 1);
+        // 5 * 6 / 5 = 6
+        assert_eq!(bump_gas_price(5), 6);
     }
 }

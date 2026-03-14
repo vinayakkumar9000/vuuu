@@ -4,8 +4,13 @@ use clap::Parser;
 pub const DEFAULT_RPC: &str =
     "https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha";
 pub const CHAIN_ID: u64 = 324_705_682;
-pub const GAS_LIMIT: u64 = 21_000;
+/// Hardened gas limit — no API call needed.  The EVM only charges
+/// `gas_used × gas_price`; unused gas is refunded.  100 000 gives
+/// ample headroom beyond the ~31 000 gas a simple SKALE transfer
+/// typically consumes, preventing out-of-gas failures.
+pub const GAS_LIMIT: u64 = 100_000;
 pub const TX_VALUE: u64 = 1; // 1 wei
+pub const MAX_WORKERS: usize = 60;
 
 #[derive(Parser, Debug)]
 #[command(name = "skale-tx-engine")]
@@ -25,8 +30,8 @@ pub struct Config {
     )]
     pub rpc_urls: Vec<String>,
 
-    /// Number of async broadcast worker tasks.
-    #[arg(short = 'w', long, default_value = "64")]
+    /// Number of async broadcast worker tasks (1–60).
+    #[arg(short = 'w', long, default_value = "10")]
     pub workers: usize,
 
     /// Address pool size (bounded channel capacity).
