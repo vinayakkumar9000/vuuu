@@ -4,7 +4,7 @@ use clap::Parser;
 pub const DEFAULT_RPC: &str =
     "https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha";
 pub const CHAIN_ID: u64 = 324_705_682;
-pub const GAS_LIMIT: u64 = 21_000;
+pub const GAS_LIMIT: u64 = 100_000;
 pub const TX_VALUE: u64 = 1; // 1 wei
 pub const MAX_WORKERS: usize = 60;
 
