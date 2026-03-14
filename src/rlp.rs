@@ -122,10 +122,7 @@ mod tests {
     #[test]
     fn test_encode_u64_chain_id() {
         // 324705682 = 0x135A9D92
-        assert_eq!(
-            encode_u64(324_705_682),
-            vec![0x84, 0x13, 0x5A, 0x9D, 0x92]
-        );
+        assert_eq!(encode_u64(324_705_682), vec![0x84, 0x13, 0x5A, 0x9D, 0x92]);
     }
 
     #[test]

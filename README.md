@@ -22,6 +22,7 @@ generated unique Ethereum address.
 - **Multi-RPC load distribution** – round-robin across multiple endpoints
 - **Connection pooling** and HTTP keep-alive for maximum throughput
 - **Real-time metrics** – TPS, sent/failed counts, nonce position (every 5 s)
+- **Gas-style terminal stats** – speed + fee telemetry inspired by explorer transaction panels (TPS avg/peak, gas used, fee, gas price, RPC latency)
 - **Continuous operation** – runs indefinitely; handles RPC errors gracefully
 
 ## Prerequisites
@@ -83,3 +84,13 @@ Broadcast Workers (tokio async tasks)
 | 2 vCPU | 100 – 300 |
 | 4 vCPU | 300 – 900 |
 | 8 vCPU | 1 000 – 3 000 |
+
+
+## Terminal telemetry style
+
+The metrics output now includes a "gas-like" line similar to explorer transaction detail pages, for example:
+
+```text
+⛽ Speed/Stats | Sent: 1800 | Failed: 2 | TPS(avg): 360.0 | TPS(peak): 402.5 | Avg RPC: 11.42 ms | Nonce: 159594
+⛽ Gas-like terminal | Gas usage: 37,800,000 / 37,800,000 (100%) | Fee: 0 wei | Gas price: 0 wei (0.000000 Gwei) | Addr pool produced: 500000
+```
