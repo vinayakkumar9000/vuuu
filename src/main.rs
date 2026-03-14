@@ -307,7 +307,7 @@ async fn main() {
 ///
 /// Continuously pulls addresses from the pool, builds, signs, and broadcasts
 /// transactions.  On "gas price too low" errors, refreshes the shared gas price
-/// state (with a 20 % bump) and retries the same nonce once before moving on.
+/// state (with a 20% bump) and retries the same nonce once before moving on.
 async fn broadcast_worker(
     worker_id: usize,
     addr_rx: crossbeam_channel::Receiver<[u8; 20]>,
@@ -372,13 +372,13 @@ async fn broadcast_worker(
                 );
             }
             Err((e, latency_micros)) => {
+                // Always record latency from the initial attempt.
                 metrics.record_rpc_latency(latency_micros);
 
                 if Broadcaster::is_gas_price_too_low(&e) {
-                    // Refresh gas price from the RPC and apply a 20 % bump.
+                    // Refresh gas price from the RPC and apply a 20% bump.
                     if let Ok(fresh_price) = broadcaster.get_gas_price().await {
-                        let bumped = fresh_price.saturating_mul(120) / 100; // +20 %
-                        let bumped = bumped.max(1); // at least 1 wei
+                        let bumped = (fresh_price.saturating_mul(120) / 100).max(1);
                         gas_price_state.store(bumped, Ordering::Relaxed);
                         warn!(
                             "Worker {}: gas price too low — bumped to {} wei ({:.6} Gwei)",
