@@ -4,6 +4,10 @@ use clap::Parser;
 pub const DEFAULT_RPC: &str =
     "https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha";
 pub const CHAIN_ID: u64 = 324_705_682;
+/// Hardened gas limit — no API call needed.  The EVM only charges
+/// `gas_used × gas_price`; unused gas is refunded.  100 000 gives
+/// ample headroom beyond the ~31 000 gas a simple SKALE transfer
+/// typically consumes, preventing out-of-gas failures.
 pub const GAS_LIMIT: u64 = 100_000;
 pub const TX_VALUE: u64 = 1; // 1 wei
 pub const MAX_WORKERS: usize = 60;

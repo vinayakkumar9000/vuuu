@@ -308,10 +308,17 @@ async fn main() {
 /// Returns `true` when the RPC error message indicates a gas-price-too-low
 /// rejection (SKALE error code -32004 or similar wording).
 fn is_gas_price_too_low(err: &str) -> bool {
-    err.contains("gas price")
-        || err.contains("gasPrice")
-        || err.contains("-32004")
-        || err.contains("underpriced")
+    let lower = err.to_lowercase();
+    lower.contains("gas price")
+        || lower.contains("gasprice")
+        || lower.contains("-32004")
+        || lower.contains("underpriced")
+}
+
+/// Apply a 20 % safety bump to a gas price (integer arithmetic, minimum 1 wei).
+fn bump_gas_price(price: u64) -> u64 {
+    // 6/5 = 1.2×
+    ((price * 6) / 5).max(1)
 }
 
 /// Async broadcast worker.
@@ -398,19 +405,13 @@ async fn broadcast_worker(
                     );
 
                     let new_gas_price = match broadcaster.get_gas_price().await {
-                        Ok(rpc_price) => {
-                            // Apply 1.2× safety margin using integer arithmetic
-                            // to avoid floating-point precision loss.
-                            let bumped = (rpc_price * 6) / 5;
-                            bumped.max(1)
-                        }
+                        Ok(rpc_price) => bump_gas_price(rpc_price),
                         Err(gp_err) => {
                             warn!(
                                 "Worker {}: eth_gasPrice failed ({}), bumping current price 1.2×",
                                 worker_id, gp_err
                             );
-                            let bumped = (gas_price * 6) / 5;
-                            bumped.max(1)
+                            bump_gas_price(gas_price)
                         }
                     };
 
@@ -503,9 +504,35 @@ mod tests {
     }
 
     #[test]
+    fn gas_price_too_low_case_insensitive() {
+        assert!(is_gas_price_too_low("Gas Price too low"));
+        assert!(is_gas_price_too_low("GASPRICE invalid"));
+        assert!(is_gas_price_too_low("UNDERPRICED transaction"));
+    }
+
+    #[test]
     fn gas_price_too_low_ignores_unrelated_errors() {
         assert!(!is_gas_price_too_low("nonce too low"));
         assert!(!is_gas_price_too_low("insufficient funds"));
         assert!(!is_gas_price_too_low("RPC send failed: timeout"));
+    }
+
+    #[test]
+    fn bump_gas_price_applies_20_percent() {
+        assert_eq!(bump_gas_price(100), 120);
+        assert_eq!(bump_gas_price(1000), 1200);
+    }
+
+    #[test]
+    fn bump_gas_price_minimum_is_one() {
+        assert_eq!(bump_gas_price(0), 1);
+    }
+
+    #[test]
+    fn bump_gas_price_handles_small_values() {
+        // 1 * 6 / 5 = 1 (integer truncation), still >= 1
+        assert_eq!(bump_gas_price(1), 1);
+        // 5 * 6 / 5 = 6
+        assert_eq!(bump_gas_price(5), 6);
     }
 }
